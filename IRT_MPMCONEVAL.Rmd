@@ -1,0 +1,197 @@
+---
+title: "Practica IRT Coneval"
+output: html_document
+date: "2025-10-30"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(latticeExtra)
+library(mirt)
+library(ggplot2)
+library(gridExtra)
+library(pracma)
+```
+
+
+# Segundo ejemplo
+
+Ahora vamos hacer estimaciones de TRI considerando el índice de seis carencias del CONEVAL. Para ello utilizaremos los datos 2018. 
+
+```{r}
+library(haven)
+D18<-read_dta("pobreza_18sample.dta")
+```
+
+El modelo del CONEVAL no parece pensar a las carencias en términos exclusivos de diferencias en severidad. Noten que también se pueden pasar los nombres de las variables. Con la función `coef()` se extraen los valores de la discriminación "a" y de la severidad "b". Hay valores un tanto bajos: ic_rezedu, ic_asalud, ic_ali. 
+
+```{r}
+m3<-mirt(D18[,c("ic_rezedu", "ic_asalud", "ic_segsoc", "ic_sbv", "ic_ali", "ic_cv")], 1, itemtype = '2PL', weights=D18$factor)
+coef(m3, IRTpars = T, simplify = T)
+```
+
+Podemos graficar los resultados de la siguiente manera con `ggplot2`
+
+```{r message=FALSE}
+plt <- plot(m3, type = 'trace', facet_items=FALSE) 
+pltdata <- data.frame(lapply(plt$panel.args, function(x) do.call(cbind, x))[[1]])
+pltdata$item <- rep(c("ic_rezedu", "ic_asalud", "ic_segsoc", "ic_sbv", "ic_ali", "ic_cv"), each = 200)
+head(pltdata)
+
+library(ggplot2)
+ggplot(pltdata, aes(x, y, colour=item)) + geom_line() + ggtitle('ICC') +
+    xlab(expression(theta)) + ylab(expression(P(theta))) + xlim(c(-3,3)) + theme_classic()
+```
+
+Ahora calculamos la curva total de información. La curva luce bastante baja. Mostrando la poca información que existe en el índice de carencias. 
+
+```{r}
+areainfo(m3, c(-3,0), which.items = 1:6)
+Theta <- matrix(seq(-3,3, length.out=1000))
+info <- testinfo(m3, Theta)
+plot(info ~ Theta, type = 'l')
+
+plot(m3, type = 'infoSE', theta_lim = c(-3,3))
+```
+
+## Aplicando los análisis avanzados al modelo CONEVAL
+
+Veamos cómo se comportan estos mismos análisis con el índice de carencias del CONEVAL:
+
+```{r message=FALSE, warning=FALSE}
+# Análisis rápido de la relación score-theta para CONEVAL
+cat("\n=== ANÁLISIS CONEVAL: RELACIÓN SCORE-THETA ===\n")
+
+# Calcular scores y thetas
+scores_coneval <- rowSums(D18[,c("ic_rezedu", "ic_asalud", "ic_segsoc", "ic_sbv", "ic_ali", "ic_cv")])
+theta_coneval_matrix <- fscores(m3, method = "EAP", full.scores = TRUE)
+
+# Extraer solo los valores de theta
+if(is.matrix(theta_coneval_matrix)) {
+  theta_coneval <- theta_coneval_matrix[,1]
+} else {
+  theta_coneval <- as.vector(theta_coneval_matrix)
+}
+
+df_coneval <- data.frame(
+  score = scores_coneval,
+  theta = theta_coneval
+)
+
+# Tabla de conversión
+tabla_coneval <- aggregate(theta ~ score, df_coneval, 
+                          function(x) c(mean = round(mean(x), 3),
+                                      n = length(x)))
+tabla_coneval <- do.call(data.frame, tabla_coneval)
+colnames(tabla_coneval) <- c("Num_Carencias", "Theta_Medio", "N")
+
+print(tabla_coneval)
+
+# Gráfico comparativo
+p_coneval <- ggplot(df_coneval, aes(x = score, y = theta)) +
+  geom_jitter(alpha = 0.2, width = 0.1, height = 0) +
+  geom_smooth(method = "loess", se = TRUE, color = "red") +
+  labs(title = "Relación Score-Theta: Índice de Carencias CONEVAL",
+       subtitle = "Nota la menor información comparado con EMSA",
+       x = "Número de Carencias",
+       y = expression(theta)) +
+  theme_minimal() +
+  scale_x_continuous(breaks = 0:6)
+
+print(p_coneval)
+```
+
+```{r}
+tabscores <- fscores(m3, full.scores = FALSE)
+head(tabscores)
+```
+
+# Test scores y escalamiento en TRI
+
+```{r}
+plot(m3, type = 'score', theta_lim = c(-3, 3), main = "")
+```
+
+# Extras: ¿Qué pasa si incluimos la pobreza por ingresos?
+
+```{r}
+m4<-mirt(D18[,c("ic_rezedu", "ic_asalud", "ic_segsoc", "ic_sbv", "ic_ali", "ic_cv", "plb_m")], 1, itemtype = '2PL', weights=D18$factor)
+coef(m4, IRTpars = T, simplify = T)
+```
+
+
+```{r}
+anova(m4, m3)
+```
+
+
+```{r}
+plot(m4, type = 'infoSE', theta_lim = c(-3,3))
+```
+
+
+# Extras: Estimación del ajuste de cada indicador. 
+
+La función itemfit muestra los cambios en $\chi^2$ atribuibles a los indicadores y el valor de RMSEA por indicador. Estos estadísticos pueden usarse para identificar items problemáticos en el contexto del modelo estimado. Valores de RMSEA.S_X2>.05 indican un pobre ajuste.
+
+
+```{r}
+itemfit(m3)
+```
+
+
+
+```{r}
+# --------------------
+# 1️⃣ Preparar un vector theta que cubra todo el rango
+Theta <- seq(-3, 3, length.out = 1000)
+
+# 2️⃣ Obtener la información total del test
+info_total <- testinfo(m3, Theta)          # vector de longitud 1000
+
+# 3️⃣ Convertir a data.frame para ggplot
+df_info <- data.frame(Theta = Theta,
+                      Info   = info_total)
+
+# 4️⃣ Calcular SE (error estándar)
+df_info$SE <- 1 / sqrt(df_info$Info)
+# Obtener θ medio para el score 4
+theta_corte <- subset(tabla_coneval, Num_Carencias == 4)$Theta_Medio
+info_at_cut <- approx(Theta, info_total, xout = theta_corte)$y
+SE_at_cut   <- 1 / sqrt(info_at_cut)
+cat("\nInformación en el corte (θ≈", round(theta_corte,2), "):",
+    round(info_at_cut,3),
+    "\nError estándar:", round(SE_at_cut,3),"\n")
+library(ggplot2)
+
+# Curva de información + línea vertical en el corte
+p1 <- ggplot(df_info, aes(x = Theta, y = Info)) +
+  geom_line(colour="steelblue") +
+  geom_vline(xintercept = theta_corte,
+             colour   = "red",
+             linetype=2) +
+  labs(title="Curva de Información Total (CONEVAL)",
+       subtitle=paste0("Punto de corte: score ≥4 → θ≈", round(theta_corte,2)),
+       x=expression(theta),
+       y="Información") +
+  theme_minimal()
+
+# Error estándar
+p2 <- ggplot(df_info, aes(x = Theta, y = SE)) +
+  geom_line(colour="darkgreen") +
+  geom_vline(xintercept = theta_corte,
+             colour   = "red",
+             linetype=2) +
+  labs(title="Error Estándar de la estimación de θ",
+       x=expression(theta),
+       y="SE(θ)") +
+  theme_minimal()
+
+gridExtra::grid.arrange(p1, p2, ncol=1)
+
+
+```
+

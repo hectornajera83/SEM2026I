@@ -1,0 +1,1123 @@
+---
+title: "Ejercicio: IRT. SEM y medición economico-social"
+author: "Héctor Nájera"
+date: "14/11/2024"
+output: html_document
+---
+
+```{r message=FALSE}
+#install.packages("latticeExtra")
+#install.packages("pracma")
+#install.packages("gridExtra")
+library(latticeExtra)
+library(mirt)
+library(ggplot2)
+library(gridExtra)
+library(pracma)
+```
+
+La EMSA descansa en dos supuestos fundamentales:
+
+1. La EMSA es unidimensional, i.e. los indicadores son manifestaciones de un mismo constructo.
+2. Los indicadores miden distintos niveles de severidad de seguridad alimentaria y discriminan equivalentemente (i.e. se trata de un modelo RASCH)
+3. La suma simple de los indicadores puede usarse para clasificar a la población en 4 grupos.
+
+**¿Qué significan estos supuestos?**
+
+## Datos
+
+El archivo `"DatosEMSA2008.csv"` contiene los datos (15 columnas). La primera columna es el id de la persona y las siguientes 12 columnas corresponden a los indicadores binarios de la EMSA (1=Carencia; 0=Sin Carencia), la columna 14 es el identificador de pobreza por ingreso y la columna 15 contiene el total de integrantes del hogar.
+
+
+```{r message=FALSE, include=TRUE, tidy=TRUE}
+D<-read.csv("DatosEMSA2008.csv")
+head(D)
+```
+
+```{r fig.cap="Items de la EMSA",  out.height = "900px", out.width = "1300px", echo=FALSE}
+knitr::include_graphics("EMSA.png")
+```
+
+Primero estimamos la prevalencias de cada episodio de hambre o de poca variedad de alimentos. Observamos cierta relación entre la crudeza del episodio de hambre y la proporción de hogares con la carencia. Ha mayor crudeza menor prevalencia. Esto es lo que esperaríamos observar en una escala que busca capturar distintas severidades del fenómeno de interés. 
+
+```{r include=TRUE}
+colMeans(D[,2:13])*100
+```
+
+Exceso de zeros:
+
+```{r}
+library(tidyverse)
+
+D_subset <- D[, 2:13]
+D_long <- D_subset %>% 
+  pivot_longer(cols = everything(),
+               names_to   = "variable",
+               values_to  = "value")
+counts <- D_long %>%
+  group_by(variable, value) %>%
+  summarise(n = n(), .groups = "drop")
+scalogram <- ggplot(counts, aes(x = variable,
+                                y = n,
+                                fill = factor(value))) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c("0" = "#1f77b4",
+                               "1" = "#ff7f0e")) +
+  labs(#title   = "Excess of Zeroes in Binary Variables (Columns 2–13)",
+       y      = "Count",
+       x      = NULL,
+       caption = "Blue = sin carencia, Orange = con carencia") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(scalogram)
+
+```
+
+
+
+## Teoría de respuesta al ítem
+
+Nos hemos enfocado en la confiabilidad global de los scores. Sin emabrgo, no tenemos mucha idea del tipo de información que aporta cada ítem a los scores globales. Esto es importante porque la EMSA apunta a capturar distintas severidades del fenómenos de interés. Estimaremos primero un modelo **Rasch** puesto que es el modelo teórico que debería representarse en los datos. Este modelo supone que las diferencias de los ítems ocurren en términos de severidad y no de discriminación. Usaremos el paquete `mirt()` y la opción `rasch()`. 
+
+```{r include=TRUE}
+library(mirt)
+
+m<-mirt(D[,2:13], 1, itemtype = 'Rasch')
+```
+
+Ahora inspeccionamos los parámetros con la función `coef`. Donde a es la discriminación y b es la severidad. g es el parámetro de la suerte. 
+
+```{r message=FALSE}
+coef(m, IRTpars = T, simplify = T)
+```
+
+Los ítems de la EMSA parecen capturar distintos grados de severidad. Observamos que los ítems de adultos tienenden a ser menos severos (a la izquierda) que los de infancia. Parece razonable el supuesto de la EMSA. Sin embargo, las distancia entre varias de las curvas son pequeñas y algunas se traslpan. Esto significa que algunos de los indicadores son redundantes.
+
+```{r message=FALSE}
+plot(m, type = "trace")
+```
+
+Si queremos ver todos los indicadores
+
+```{r message=FALSE}
+plot(m, type = 'trace', auto.key = FALSE, which.items = 1:12, facet_items=FALSE)
+```
+
+### Mejores gráficas con `ggplot2`
+
+```{r message=FALSE}
+plt <- plot(m, type = 'trace', facet_items=FALSE) #store the object
+#print(plt) #plot the object
+#str(plt) #find the data
+#plt$panel.args
+pltdata <- data.frame(lapply(plt$panel.args, function(x) do.call(cbind, x))[[1]])
+pltdata$item <- rep(colnames(D[,2:13]), each = 200)
+head(pltdata)
+
+library(ggplot2)
+ggplot(pltdata, aes(x, y, colour=item)) + geom_line() + ggtitle('ggplot2 Tracelines') +
+    xlab(expression(theta)) + ylab(expression(P(theta))) + theme_classic() + xlim(c(-3,3))
+```
+
+
+## Modelo de dos parámetros
+
+Ahora estimamos un modelo de teoría de respuesta al ítem de dos parámetros. Cambiamos el argumento `itemtype="2PL"`. 
+
+Es decir, relajamos el supuesto de que la dificultad es la misma para todos los ítems. Observamos que el supuesto del modelo rasch no parece sostenerse. Las pendientes tienenden a ser distintas y las curvas de alguos ítem cruzan otras curvas. Ciertos ítems como el *iaa_4* parecen tocar distintos niveles de seguridad alimentaria. Aunque los parámetros de discriminación son distintos, en todos los casos son valores altos $\geq.9$. Esto es consistente con los altos valores de las $\lambda$'s del modelo factorial. 
+
+```{r message=FALSE}
+m2<-mirt(D[,2:13], 1, itemtype = '2PL')
+coef(m2, IRTpars = T, simplify = T)
+```
+
+```{r message=FALSE}
+plot(m2, type = 'trace', auto.key = FALSE, which.items = 1:12, facet_items=FALSE)
+```
+
+### Mejores gráficas con ggplot2
+
+```{r message=FALSE}
+plt <- plot(m2, type = 'trace', facet_items=FALSE) #store the object
+#print(plt) #plot the object
+#str(plt) #find the data
+#plt$panel.args
+pltdata <- data.frame(lapply(plt$panel.args, function(x) do.call(cbind, x))[[1]])
+pltdata$item <- rep(colnames(D[,2:13]), each = 200)
+head(pltdata)
+
+library(ggplot2)
+ggplot(pltdata, aes(x, y, colour=item)) + geom_line() + ggtitle('ICC') +
+    xlab(expression(theta)) + ylab(expression(P(theta))) + xlim(c(-3,3))
+```
+
+```{r}
+plot(m2, type = 'trace', auto.key = FALSE, which.items = 4:8, facet_items=FALSE)
+```
+
+## Curva total de información
+
+La información puede partirse en distintos segmentos. Por ejemplo, si quisieramos saber la información para un nivel de severidad dado entre -2 y 0 desviaciones estándar podemos utilizar la función `areainfo()`. 
+
+```{r}
+areainfo(m2, c(-2,0), which.items = 1:12)
+```
+Una forma de graficar los resultados para la mayoría de la distribución de la variable latente es extrayendo la información para distintos niveles de Theta. Una vez hecho esto, es posible graficar la curva total de información. 
+
+```{r}
+Theta <- matrix(seq(-3,3, length.out=1000))
+info <- testinfo(m2, Theta)
+plot(info ~ Theta, type = 'l')
+```
+
+```{r}
+plot(m2, type = 'infoSE', theta_lim = c(-3,3))
+```
+
+
+## Comparación de modelos
+
+Podemos utilizar la función `anova()` para comparar los estadísticos de ajuste de ambos modelos. Dado que AICc y BIC son menores para el segundo modelo, concluimos que el segundo modelo es MEJOR! 
+
+```{r}
+anova(m, m2)
+```
+
+
+## Test scores
+
+# Test scores y escalamiento en TRI
+
+Dado un modelo, se estima el score estimado
+
+```{r}
+Theta <- matrix(seq(-3,3,.01))
+tscore <- expected.test(m2, Theta)
+```
+
+## Graficamos la relación de cada score con Theta
+
+```{r}
+plot(cbind(Theta, tscore))
+```
+
+# =============================================================
+# NUEVAS SECCIONES: Análisis Avanzados de la Relación Score-Theta
+# =============================================================
+
+## Análisis 1: Relación entre Score Observado y Theta Estimado - Comparación Rasch vs 2PL
+
+Una pregunta fundamental en IRT es: ¿cómo se relaciona el score observado (suma simple de ítems) con la habilidad latente estimada (theta)? Esta relación NO es lineal, y **difiere entre modelos**. Vamos a comparar cómo el modelo Rasch (1 parámetro) y el modelo 2PL (2 parámetros) estiman theta para los mismos scores observados.
+
+```{r message=FALSE, warning=FALSE}
+# Función mejorada para comparar modelos
+comparar_modelos_score_theta <- function(modelo_rasch, modelo_2pl, datos) {
+  # Calcular scores observados (suma simple)
+  scores_observados <- rowSums(datos)
+  
+  # Estimar theta para modelo RASCH
+  theta_rasch_matrix <- fscores(modelo_rasch, method = "EAP", full.scores = TRUE)
+  if(is.matrix(theta_rasch_matrix)) {
+    theta_rasch <- theta_rasch_matrix[,1]
+    se_rasch <- if(ncol(theta_rasch_matrix) > 1) theta_rasch_matrix[,2] else rep(0.3, nrow(theta_rasch_matrix))
+  } else {
+    theta_rasch <- as.vector(theta_rasch_matrix)
+    se_rasch <- rep(0.3, length(theta_rasch))
+  }
+  
+  # Estimar theta para modelo 2PL
+  theta_2pl_matrix <- fscores(modelo_2pl, method = "EAP", full.scores = TRUE)
+  if(is.matrix(theta_2pl_matrix)) {
+    theta_2pl <- theta_2pl_matrix[,1]
+    se_2pl <- if(ncol(theta_2pl_matrix) > 1) theta_2pl_matrix[,2] else rep(0.3, nrow(theta_2pl_matrix))
+  } else {
+    theta_2pl <- as.vector(theta_2pl_matrix)
+    se_2pl <- rep(0.3, length(theta_2pl))
+  }
+  
+  # Crear dataframe comparativo
+  df_comparacion <- data.frame(
+    score = scores_observados,
+    theta_rasch = theta_rasch,
+    theta_2pl = theta_2pl,
+    se_rasch = se_rasch,
+    se_2pl = se_2pl,
+    diferencia = theta_2pl - theta_rasch
+  )
+  
+  # Gráfico 1: Comparación directa de thetas
+  p1 <- ggplot(df_comparacion) +
+    geom_point(aes(x = score, y = theta_rasch, color = "Rasch"), 
+               alpha = 0.3, position = position_jitter(width = 0.05)) +
+    geom_point(aes(x = score, y = theta_2pl, color = "2PL"), 
+               alpha = 0.3, position = position_jitter(width = 0.05)) +
+    geom_smooth(aes(x = score, y = theta_rasch, color = "Rasch"), 
+                method = "loess", se = FALSE, size = 1.2) +
+    geom_smooth(aes(x = score, y = theta_2pl, color = "2PL"), 
+                method = "loess", se = FALSE, size = 1.2) +
+    scale_color_manual(values = c("Rasch" = "blue", "2PL" = "red")) +
+    labs(title = "Comparación: \n Score Observado vs Theta Estimado",
+         subtitle = "Modelo Rasch (azul) vs Modelo 2PL (rojo)",
+         x = "Score Observado (suma de ítems)",
+         y = expression(theta ~ "(habilidad latente)"),
+         color = "Modelo") +
+    theme_minimal() +
+    scale_x_continuous(breaks = 0:12)
+  
+  # Gráfico 2: Diferencia entre modelos
+  p2 <- ggplot(df_comparacion, aes(x = score, y = diferencia)) +
+    geom_boxplot(aes(group = score), fill = "lightgreen", alpha = 0.7) +
+    geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+    geom_smooth(method = "loess", color = "darkgreen", se = TRUE) +
+    labs(title = "Diferencia en Estimación de Theta \n entre Modelos",
+         subtitle = "Theta(2PL) - Theta(Rasch)",
+         x = "Score Observado",
+         y = "Diferencia en Theta") +
+    theme_minimal() +
+    scale_x_continuous(breaks = 0:12)
+  
+  # Tabla comparativa por score
+  tabla_comparacion <- aggregate(cbind(theta_rasch, theta_2pl, diferencia) ~ score, 
+                                 df_comparacion, 
+                                 function(x) c(mean = round(mean(x), 3), 
+                                             sd = round(sd(x), 3)))
+  tabla_comparacion <- do.call(data.frame, tabla_comparacion)
+  colnames(tabla_comparacion) <- c("Score", "Theta_Rasch_Mean", "Theta_Rasch_SD",
+                                   "Theta_2PL_Mean", "Theta_2PL_SD",
+                                   "Diferencia_Mean", "Diferencia_SD")
+  
+  # Gráfico 3: Correlación entre estimaciones
+  correlacion <- cor(df_comparacion$theta_rasch, df_comparacion$theta_2pl)
+  
+  p3 <- ggplot(df_comparacion, aes(x = theta_rasch, y = theta_2pl)) +
+    geom_point(alpha = 0.3) +
+    geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+    geom_smooth(method = "lm", se = TRUE, color = "blue") +
+    annotate("text", x = -2, y = 2, 
+             label = paste("r =", round(correlacion, 3)), 
+             size = 4, color = "blue") +
+    labs(title = "Correlación entre Estimaciones Rasch vs 2PL",
+         subtitle = "Línea roja = Concordancia perfecta",
+         x = expression(theta ~ "Rasch"),
+         y = expression(theta ~ "2PL")) +
+    theme_minimal() +
+    coord_fixed()
+  
+  # Mostrar gráficos
+  grid.arrange(p1, p2, ncol = 2)
+  print(p3)
+  
+  return(list(
+    datos = df_comparacion,
+    tabla = tabla_comparacion,
+    correlacion = correlacion,
+    graficos = list(comparacion = p1, diferencia = p2, correlacion = p3)
+  ))
+}
+
+# Aplicar la comparación
+cat("\n=== COMPARACIÓN MODELOS: RASCH vs 2PL ===\n")
+comparacion_modelos <- comparar_modelos_score_theta(m, m2, D[,2:13])
+
+cat("\nTabla comparativa por score:\n")
+print(comparacion_modelos$tabla)
+
+cat("\n\nCorrelación entre estimaciones Rasch y 2PL:", round(comparacion_modelos$correlacion, 3), "\n")
+
+# Análisis adicional: ¿Dónde difieren más los modelos?
+cat("\n=== ANÁLISIS DE DIFERENCIAS ===\n")
+cat("Scores donde los modelos difieren más (|diferencia| > 0.1):\n")
+dif_relevantes <- comparacion_modelos$tabla[abs(comparacion_modelos$tabla$Diferencia_Mean) > 0.1,]
+if(nrow(dif_relevantes) > 0) {
+  print(dif_relevantes[,c("Score", "Theta_Rasch_Mean", "Theta_2PL_Mean", "Diferencia_Mean")])
+} else {
+  cat("No hay diferencias sustanciales > 0.1 entre modelos\n")
+}
+```
+
+### Interpretación de la comparación Rasch vs 2PL:
+
+**Diferencias clave entre modelos:**
+- **Modelo Rasch**: Asume que todos los ítems discriminan igualmente (a = constante), solo difieren en dificultad (b)
+- **Modelo 2PL**: Permite que cada ítem tenga su propia discriminación (a) y dificultad (b)
+
+**Observaciones de la comparación:**
+1. **Alta correlación**: Ambos modelos producen estimaciones similares pero no idénticas
+2. **Diferencias en extremos**: Las mayores diferencias suelen ocurrir en scores muy bajos o muy altos
+3. **Compresión diferencial**: El modelo 2PL puede producir mayor dispersión en theta debido a las diferentes discriminaciones
+4. **Implicaciones prácticas**: 
+   - Si los modelos difieren mucho → Los ítems tienen discriminaciones muy diferentes
+   - Si los modelos son similares → El supuesto Rasch es razonable
+
+## Análisis 2: Información Aportada por cada Nivel de Score - Comparación de Modelos
+
+No todos los scores aportan la misma cantidad de información. Además, la información puede diferir entre modelos Rasch y 2PL.
+
+```{r message=FALSE, warning=FALSE}
+# Función mejorada para comparar información entre modelos
+comparar_informacion_modelos <- function(modelo_rasch, modelo_2pl, datos) {
+  # Calcular scores observados
+  scores_observados <- rowSums(datos)
+  
+  # Estimar theta para cada persona - Modelo RASCH
+  theta_rasch_matrix <- fscores(modelo_rasch, method = "EAP", full.scores = TRUE)
+  if(is.matrix(theta_rasch_matrix)) {
+    theta_rasch <- theta_rasch_matrix[,1]
+  } else {
+    theta_rasch <- as.vector(theta_rasch_matrix)
+  }
+  
+  # Estimar theta para cada persona - Modelo 2PL
+  theta_2pl_matrix <- fscores(modelo_2pl, method = "EAP", full.scores = TRUE)
+  if(is.matrix(theta_2pl_matrix)) {
+    theta_2pl <- theta_2pl_matrix[,1]
+  } else {
+    theta_2pl <- as.vector(theta_2pl_matrix)
+  }
+  
+  # Calcular información para cada persona en ambos modelos
+  info_rasch <- numeric(length(theta_rasch))
+  info_2pl <- numeric(length(theta_2pl))
+  
+  for(i in 1:length(theta_rasch)) {
+    info_rasch[i] <- testinfo(modelo_rasch, matrix(theta_rasch[i]))
+    info_2pl[i] <- testinfo(modelo_2pl, matrix(theta_2pl[i]))
+  }
+  
+  # Crear dataframe comparativo
+  df_info <- data.frame(
+    score = scores_observados,
+    theta_rasch = theta_rasch,
+    theta_2pl = theta_2pl,
+    info_rasch = info_rasch,
+    info_2pl = info_2pl,
+    se_rasch = 1/sqrt(info_rasch),
+    se_2pl = 1/sqrt(info_2pl)
+  )
+  
+  # Visualización comparativa
+  p1 <- ggplot(df_info) +
+    geom_boxplot(aes(x = score, y = info_rasch, group = score), 
+                 fill = "lightblue", alpha = 0.5) +
+    geom_boxplot(aes(x = score, y = info_2pl, group = score), 
+                 fill = "lightcoral", alpha = 0.5) +
+    geom_smooth(aes(x = score, y = info_rasch), 
+                method = "loess", color = "blue", se = FALSE, size = 1.2) +
+    geom_smooth(aes(x = score, y = info_2pl), 
+                method = "loess", color = "red", se = FALSE, size = 1.2) +
+    labs(title = "Comparación de Información: \n Rasch (azul) vs 2PL (rojo)",
+         x = "Score Observado",
+         y = "Información del Test") +
+    theme_minimal() +
+    scale_x_continuous(breaks = 0:12)
+  
+  p2 <- ggplot(df_info) +
+    geom_boxplot(aes(x = score, y = se_rasch, group = score), 
+                 fill = "lightblue", alpha = 0.5) +
+    geom_boxplot(aes(x = score, y = se_2pl, group = score), 
+                 fill = "lightcoral", alpha = 0.5) +
+    geom_smooth(aes(x = score, y = se_rasch), 
+                method = "loess", color = "blue", se = FALSE, size = 1.2) +
+    geom_smooth(aes(x = score, y = se_2pl), 
+                method = "loess", color = "red", se = FALSE, size = 1.2) +
+    labs(title = "Comparación de Error Estándar: \n Rasch (azul) vs 2PL (rojo)",
+         x = "Score Observado",
+         y = "Error Estándar de Medición") +
+    theme_minimal() +
+    scale_x_continuous(breaks = 0:12)
+  
+  # Resumen comparativo
+  df_resumen <- aggregate(cbind(info_rasch, info_2pl, se_rasch, se_2pl) ~ score, 
+                          df_info, 
+                          function(x) round(mean(x), 3))
+  
+  # Calcular diferencia porcentual en información
+  df_resumen$ganancia_info <- round((df_resumen$info_2pl - df_resumen$info_rasch) / 
+                                    df_resumen$info_rasch * 100, 1)
+  
+  grid.arrange(p1, p2, ncol = 2)
+  
+  return(list(
+    datos = df_info, 
+    resumen = df_resumen,
+    graficos = list(informacion = p1, error = p2)
+  ))
+}
+
+# Aplicar comparación
+cat("\n=== COMPARACIÓN DE INFORMACIÓN: RASCH vs 2PL ===\n")
+info_comparacion <- comparar_informacion_modelos(m, m2, D[,2:13])
+
+cat("\nResumen por score (medias):\n")
+print(info_comparacion$resumen[,c("score", "info_rasch", "info_2pl", "ganancia_info")])
+
+cat("\n\nGanancia promedio de información del 2PL sobre Rasch:", 
+    round(mean(info_comparacion$resumen$ganancia_info, na.rm = TRUE), 1), "%\n")
+```
+
+### Interpretación de la comparación de información:
+- **Modelo 2PL generalmente más informativo**: Al permitir diferentes discriminaciones, suele aportar más información
+- **Ganancia variable**: La mejora del 2PL sobre Rasch no es uniforme en todos los scores
+- **Trade-off**: Mayor complejidad del 2PL vs parsimonia del Rasch
+- **Implicación práctica**: Si la ganancia es mínima, el modelo Rasch puede ser preferible por su simplicidad
+
+## Análisis 3: Puntos de Corte - Comparación con Particiones Tradicionales EMSA
+
+Un aspecto crucial es comparar los puntos de corte tradicionales del modelo Rasch (0, 1-3, 4-7, 8-12) con lo que sugiere la función de información del test.
+
+```{r message=FALSE, warning=FALSE}
+# Función para analizar y comparar puntos de corte tradicionales vs óptimos
+comparar_puntos_corte_tradicionales <- function(modelo_rasch, modelo_2pl, datos) {
+  # PARTICIONES TRADICIONALES EMSA (basadas en conteo simple)
+  particiones_tradicionales <- list(
+    "Seguridad Alimentaria" = 0,
+    "Inseguridad Leve" = 1:3,
+    "Inseguridad Moderada" = 4:7,
+    "Inseguridad Severa" = 8:12
+  )
+  
+  # Calcular scores observados
+  scores_obs <- rowSums(datos)
+  
+  # Estimar theta para ambos modelos
+  theta_rasch_matrix <- fscores(modelo_rasch, method = "EAP", full.scores = TRUE)
+  theta_2pl_matrix <- fscores(modelo_2pl, method = "EAP", full.scores = TRUE)
+  
+  theta_rasch <- if(is.matrix(theta_rasch_matrix)) theta_rasch_matrix[,1] else as.vector(theta_rasch_matrix)
+  theta_2pl <- if(is.matrix(theta_2pl_matrix)) theta_2pl_matrix[,1] else as.vector(theta_2pl_matrix)
+  
+  # ANÁLISIS 1: Theta promedio por categoría tradicional
+  cat("\n=== THETA PROMEDIO POR CATEGORÍA TRADICIONAL ===\n")
+  
+  theta_por_categoria <- data.frame()
+  for(cat_name in names(particiones_tradicionales)) {
+    scores_cat <- particiones_tradicionales[[cat_name]]
+    idx_cat <- which(scores_obs %in% scores_cat)
+    
+    if(length(idx_cat) > 0) {
+      theta_por_categoria <- rbind(theta_por_categoria,
+        data.frame(
+          Categoria = cat_name,
+          Scores = paste(min(scores_cat), "-", max(scores_cat)),
+          N = length(idx_cat),
+          Theta_Rasch_Mean = round(mean(theta_rasch[idx_cat]), 3),
+          Theta_Rasch_SD = round(sd(theta_rasch[idx_cat]), 3),
+          Theta_2PL_Mean = round(mean(theta_2pl[idx_cat]), 3),
+          Theta_2PL_SD = round(sd(theta_2pl[idx_cat]), 3)
+        )
+      )
+    }
+  }
+  
+  # Ajustar la columna Scores para score único
+  theta_por_categoria$Scores[1] <- "0"
+  
+  print(theta_por_categoria)
+  
+  # ANÁLISIS 2: Información del test en puntos de transición
+  cat("\n\n=== INFORMACIÓN EN PUNTOS DE TRANSICIÓN ===\n")
+  
+  # Puntos de transición entre categorías (scores: 0→1, 3→4, 7→8)
+  transiciones <- c(0.5, 3.5, 7.5)  # Entre scores
+  
+  # Calcular theta correspondiente a cada punto de transición
+  theta_transiciones <- numeric(length(transiciones))
+  info_transiciones_rasch <- numeric(length(transiciones))
+  info_transiciones_2pl <- numeric(length(transiciones))
+  
+  for(i in 1:length(transiciones)) {
+    # Interpolación de theta en el punto de transición
+    score_bajo <- floor(transiciones[i])
+    score_alto <- ceiling(transiciones[i])
+    
+    idx_bajo <- which(scores_obs == score_bajo)
+    idx_alto <- which(scores_obs == score_alto)
+    
+    if(length(idx_bajo) > 0 && length(idx_alto) > 0) {
+      theta_bajo_rasch <- mean(theta_rasch[idx_bajo])
+      theta_alto_rasch <- mean(theta_rasch[idx_alto])
+      theta_transiciones[i] <- (theta_bajo_rasch + theta_alto_rasch) / 2
+      
+      # Calcular información en ese punto
+      info_transiciones_rasch[i] <- testinfo(modelo_rasch, matrix(theta_transiciones[i]))
+      info_transiciones_2pl[i] <- testinfo(modelo_2pl, matrix(theta_transiciones[i]))
+    }
+  }
+  
+  df_transiciones <- data.frame(
+    Transicion = c("Seguridad→Leve (0→1)", 
+                   "Leve→Moderada (3→4)", 
+                   "Moderada→Severa (7→8)"),
+    Theta_Transicion = round(theta_transiciones, 3),
+    Info_Rasch = round(info_transiciones_rasch, 2),
+    Info_2PL = round(info_transiciones_2pl, 2),
+    SE_Rasch = round(1/sqrt(info_transiciones_rasch), 3),
+    SE_2PL = round(1/sqrt(info_transiciones_2pl), 3)
+  )
+  
+  print(df_transiciones)
+  
+  # ANÁLISIS 3: Clasificación óptima basada en información
+  cat("\n\n=== PUNTOS DE CORTE ÓPTIMOS BASADOS EN INFORMACIÓN ===\n")
+  
+  # Buscar mínimos locales en la función de información (valles)
+  theta_rango <- seq(-3, 3, by = 0.05)
+  info_rasch_continuo <- testinfo(modelo_rasch, matrix(theta_rango))
+  info_2pl_continuo <- testinfo(modelo_2pl, matrix(theta_rango))
+  
+  # Encontrar mínimos locales (valles) en la información - buenos puntos de corte
+  library(pracma)
+  
+  # Invertir para encontrar mínimos como máximos
+  valles_rasch <- findpeaks(-info_rasch_continuo, npeaks = 3)
+  valles_2pl <- findpeaks(-info_2pl_continuo, npeaks = 3)
+  
+  if(!is.null(valles_rasch)) {
+    cortes_info_rasch <- sort(theta_rango[valles_rasch[,2]])
+  } else {
+    # Si no encuentra valles, usar cuartiles
+    cortes_info_rasch <- quantile(theta_rasch, probs = c(0.25, 0.5, 0.75))
+  }
+  
+  if(!is.null(valles_2pl)) {
+    cortes_info_2pl <- sort(theta_rango[valles_2pl[,2]])
+  } else {
+    cortes_info_2pl <- quantile(theta_2pl, probs = c(0.25, 0.5, 0.75))
+  }
+  
+  # ANÁLISIS 4: Comparación visual
+  
+  # Crear dataframe para visualización
+  df_viz <- data.frame(
+    score = scores_obs,
+    theta_rasch = theta_rasch,
+    theta_2pl = theta_2pl,
+    categoria_tradicional = NA
+  )
+  
+  # Asignar categorías tradicionales
+  for(i in 1:nrow(df_viz)) {
+    if(df_viz$score[i] == 0) df_viz$categoria_tradicional[i] <- "Seguridad"
+    else if(df_viz$score[i] <= 3) df_viz$categoria_tradicional[i] <- "Leve"
+    else if(df_viz$score[i] <= 7) df_viz$categoria_tradicional[i] <- "Moderada"
+    else df_viz$categoria_tradicional[i] <- "Severa"
+  }
+  
+  df_viz$categoria_tradicional <- factor(df_viz$categoria_tradicional, 
+                                         levels = c("Seguridad", "Leve", "Moderada", "Severa"))
+  
+  # Gráfico 1: Distribución de theta por categoría tradicional
+  p1 <- ggplot(df_viz, aes(x = categoria_tradicional, y = theta_2pl)) +
+    geom_boxplot(aes(fill = categoria_tradicional), alpha = 0.7) +
+    geom_violin(aes(fill = categoria_tradicional), alpha = 0.3) +
+    scale_fill_manual(values = c("Seguridad" = "green", "Leve" = "yellow", 
+                                 "Moderada" = "orange", "Severa" = "red")) +
+    labs(title = "Distribución de Theta (2PL) \n por Categoría Tradicional",
+         subtitle = "Particiones: 0 | 1-3 | 4-7 | 8-12",
+         x = "Categoría Tradicional",
+         y = expression(theta ~ "(2PL)")) +
+    theme_minimal() +
+    theme(legend.position = "none")
+  
+  # Calcular información promedio por score
+  info_por_score <- data.frame(score = 0:12)
+  for(s in 0:12) {
+    idx_score <- which(scores_obs == s)
+    if(length(idx_score) > 0) {
+      theta_medio <- mean(theta_2pl[idx_score])
+      info_por_score$info_2pl[s+1] <- testinfo(modelo_2pl, matrix(theta_medio))
+      info_por_score$info_rasch[s+1] <- testinfo(modelo_rasch, matrix(theta_medio))
+      info_por_score$n[s+1] <- length(idx_score)
+    } else {
+      info_por_score$info_2pl[s+1] <- NA
+      info_por_score$info_rasch[s+1] <- NA
+      info_por_score$n[s+1] <- 0
+    }
+  }
+  
+  # Gráfico 2: Información por score con líneas de corte tradicionales
+  p2 <- ggplot(info_por_score, aes(x = score)) +
+    geom_line(aes(y = info_2pl, color = "2PL"), size = 1.2, na.rm = TRUE) +
+    geom_line(aes(y = info_rasch, color = "Rasch"), size = 1.2, linetype = "dashed", na.rm = TRUE) +
+    geom_point(aes(y = info_2pl), color = "red", size = 2, na.rm = TRUE) +
+    geom_point(aes(y = info_rasch), color = "blue", size = 2, na.rm = TRUE) +
+    
+    # Añadir líneas verticales en los puntos de corte tradicionales
+    geom_vline(xintercept = c(0.5, 3.5, 7.5), 
+               color = "darkgreen", linetype = "dotted", size = 1, alpha = 0.7) +
+    
+    # Áreas sombreadas por categoría
+    annotate("rect", xmin = -0.5, xmax = 0.5, ymin = 0, ymax = Inf, 
+             fill = "green", alpha = 0.1) +
+    annotate("rect", xmin = 0.5, xmax = 3.5, ymin = 0, ymax = Inf, 
+             fill = "yellow", alpha = 0.1) +
+    annotate("rect", xmin = 3.5, xmax = 7.5, ymin = 0, ymax = Inf, 
+             fill = "orange", alpha = 0.1) +
+    annotate("rect", xmin = 7.5, xmax = 12.5, ymin = 0, ymax = Inf, 
+             fill = "red", alpha = 0.1) +
+    
+    scale_color_manual(values = c("2PL" = "red", "Rasch" = "blue")) +
+    labs(title = "Información del Test por Score \n con Particiones Tradicionales",
+         subtitle = "Líneas punteadas = puntos de corte (0|1-3|4-7|8-12)",
+         x = "Score Observado",
+         y = "Información",
+         color = "Modelo") +
+    theme_minimal() +
+    scale_x_continuous(breaks = 0:12)
+  
+  # Gráfico 3: Curva de información continua con todos los puntos de corte
+  df_info_continuo <- data.frame(
+    theta = theta_rango,
+    info_rasch = info_rasch_continuo,
+    info_2pl = info_2pl_continuo
+  )
+  
+  # Calcular theta correspondiente a scores de corte tradicionales
+  theta_cortes_trad <- numeric(3)
+  for(i in 1:3) {
+    theta_cortes_trad[i] <- theta_transiciones[i]
+  }
+  
+  p3 <- ggplot(df_info_continuo, aes(x = theta)) +
+    geom_line(aes(y = info_2pl), color = "red", size = 1.2) +
+    geom_line(aes(y = info_rasch), color = "blue", size = 1.2, linetype = "dashed") +
+    
+    # Puntos de corte tradicionales (en theta)
+    geom_vline(xintercept = theta_cortes_trad, 
+               color = "darkgreen", linetype = "dotted", size = 1) +
+    
+    # Puntos de corte óptimos basados en información
+    if(length(cortes_info_2pl) >= 3) {
+      geom_vline(xintercept = cortes_info_2pl[1:3], 
+                 color = "purple", linetype = "dashed", size = 1, alpha = 0.7)
+    }
+    
+    labs(title = "Función de Información: Cortes Tradicionales vs Óptimos",
+         subtitle = "Verde (..) = Tradicionales | Púrpura (--) = Óptimos por información",
+         x = expression(theta),
+         y = "Información") +
+    theme_minimal() +
+    
+    # Añadir etiquetas
+    annotate("text", x = -2, y = max(info_2pl_continuo)*0.9, 
+             label = "Seguridad", size = 3, color = "darkgreen") +
+    annotate("text", x = -0.5, y = max(info_2pl_continuo)*0.9, 
+             label = "Leve", size = 3, color = "darkgreen") +
+    annotate("text", x = 0.5, y = max(info_2pl_continuo)*0.9, 
+             label = "Moderada", size = 3, color = "darkgreen") +
+    annotate("text", x = 2, y = max(info_2pl_continuo)*0.9, 
+             label = "Severa", size = 3, color = "darkgreen")
+  
+  # Mostrar gráficos
+  library(gridExtra)
+  grid.arrange(p1, p2, ncol = 2)
+  print(p3)
+  
+  # ANÁLISIS 5: Evaluación de la calidad de las particiones
+  cat("\n\n=== EVALUACIÓN DE LAS PARTICIONES TRADICIONALES ===\n")
+  
+  # Calcular traslape entre categorías adyacentes
+  traslape <- data.frame()
+  
+  categorias <- c("Seguridad", "Leve", "Moderada", "Severa")
+  for(i in 1:(length(categorias)-1)) {
+    cat1 <- categorias[i]
+    cat2 <- categorias[i+1]
+    
+    theta1 <- df_viz$theta_2pl[df_viz$categoria_tradicional == cat1]
+    theta2 <- df_viz$theta_2pl[df_viz$categoria_tradicional == cat2]
+    
+    # Calcular traslape (proporción de casos mal clasificados si usamos la media como punto de corte)
+    corte_medio <- (mean(theta1) + mean(theta2)) / 2
+    mal_clasificados1 <- sum(theta1 > corte_medio) / length(theta1)
+    mal_clasificados2 <- sum(theta2 < corte_medio) / length(theta2)
+    
+    traslape <- rbind(traslape,
+      data.frame(
+        Transicion = paste(cat1, "→", cat2),
+        traslape_Pct = round((mal_clasificados1 + mal_clasificados2) / 2 * 100, 1),
+        Theta_Gap = round(mean(theta2) - mean(theta1), 3),
+        Info_en_corte = round(info_transiciones_2pl[i], 2)
+      )
+    )
+  }
+  
+  print(traslape)
+  
+  
+  # Verificar si los puntos de corte están en zonas de baja información
+  info_baja <- any(info_transiciones_2pl < 2)
+  if(info_baja) {
+    cat("⚠ Algunos puntos de corte están en zonas de baja información (<2).\n")
+    cat("  Considere ajustar los puntos de corte o añadir más ítems en esas zonas.\n")
+  } else {
+    cat("✓ Los puntos de corte están en zonas con información adecuada (≥2).\n")
+  }
+  
+  return(list(
+    theta_por_categoria = theta_por_categoria,
+    info_transiciones = df_transiciones,
+    traslape = traslape,
+    info_por_score = info_por_score,
+    graficos = list(dist_theta = p1, info_score = p2, info_continuo = p3)
+  ))
+}
+
+# Aplicar el análisis
+cat("\n=== ANÁLISIS DE PARTICIONES TRADICIONALES EMSA ===\n")
+cat("Particiones tradicionales: 0 | 1-3 | 4-7 | 8-12\n")
+cat("(Seguridad | Inseg. Leve | Inseg. Moderada | Inseg. Severa)\n")
+
+analisis_particiones <- comparar_puntos_corte_tradicionales(m, m2, D[,2:13])
+```
+
+### Interpretación de las particiones tradicionales EMSA:
+
+**Evaluación desde la perspectiva de información:**
+
+1. **Información en puntos de corte**: ¿Los cortes están en zonas de alta o baja precisión?
+2. **traslape entre categorías**: ¿Qué tan bien separadas están las categorías en términos de theta?
+3. **Consistencia entre modelos**: ¿Las particiones funcionan igual para Rasch y 2PL?
+
+
+## Análisis 4: Confiabilidad Condicional del Test
+
+La confiabilidad no es constante a lo largo de toda la escala. Es importante entender dónde el test es más confiable.
+
+```{r message=FALSE, warning=FALSE}
+# Análisis de confiabilidad condicional
+confiabilidad_condicional <- function(modelo) {
+  # Calcular información y confiabilidad a lo largo del continuo
+  theta_continuo <- seq(-3, 3, by = 0.05)
+  info_continuo <- testinfo(modelo, matrix(theta_continuo))
+  se_continuo <- 1/sqrt(info_continuo)
+  
+  # Confiabilidad marginal aproximada
+  # Rel = 1 - (SE^2 / Var(theta))
+  var_theta <- 1  # Asumiendo distribución estándar
+  confiab_continuo <- 1 - (se_continuo^2 / var_theta)
+  confiab_continuo[confiab_continuo < 0] <- 0
+  confiab_continuo[confiab_continuo > 1] <- 1
+  
+  df_continuo <- data.frame(
+    theta = theta_continuo,
+    confiabilidad = confiab_continuo,
+    se = se_continuo,
+    informacion = info_continuo
+  )
+  
+  # Identificar zonas de alta confiabilidad
+  zonas_alta_conf <- df_continuo[df_continuo$confiabilidad > 0.8, ]
+  rango_optimo <- c(min(zonas_alta_conf$theta), max(zonas_alta_conf$theta))
+  
+  p <- ggplot(df_continuo, aes(x = theta)) +
+    geom_line(aes(y = confiabilidad), color = "blue", size = 1.2) +
+    geom_ribbon(aes(ymin = 0, ymax = confiabilidad), 
+                fill = "lightblue", alpha = 0.3) +
+    geom_hline(yintercept = 0.7, linetype = "dashed", color = "orange", alpha = 0.7) +
+    geom_hline(yintercept = 0.8, linetype = "dashed", color = "darkgreen", alpha = 0.7) +
+    geom_hline(yintercept = 0.9, linetype = "dashed", color = "darkblue", alpha = 0.7) +
+    
+    # Zona óptima
+    annotate("rect", xmin = rango_optimo[1], xmax = rango_optimo[2],
+             ymin = 0, ymax = 1, fill = "green", alpha = 0.1) +
+    
+    # Etiquetas
+    annotate("text", x = 2.5, y = 0.72, label = "α = 0.70", color = "orange", size = 3) +
+    annotate("text", x = 2.5, y = 0.82, label = "α = 0.80", color = "darkgreen", size = 3) +
+    annotate("text", x = 2.5, y = 0.92, label = "α = 0.90", color = "darkblue", size = 3) +
+    
+    scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.1)) +
+    labs(title = "Confiabilidad Condicional del Test EMSA",
+         subtitle = paste("Zona óptima (α > 0.8): θ entre", round(rango_optimo[1], 2), 
+                         "y", round(rango_optimo[2], 2)),
+         x = expression(theta ~ "(Inseguridad Alimentaria)"),
+         y = "Confiabilidad") +
+    theme_minimal()
+  
+  # Tabla resumen por rangos
+  rangos <- list(
+    "Muy Bajo [-3, -2)" = c(-3, -2),
+    "Bajo [-2, -1)" = c(-2, -1),
+    "Medio [-1, 1]" = c(-1, 1),
+    "Alto (1, 2]" = c(1, 2),
+    "Muy Alto (2, 3]" = c(2, 3)
+  )
+  
+  resumen_rangos <- data.frame()
+  for(nombre in names(rangos)) {
+    rango <- rangos[[nombre]]
+    idx <- which(theta_continuo >= rango[1] & theta_continuo <= rango[2])
+    resumen_rangos <- rbind(resumen_rangos,
+                            data.frame(
+                              Rango = nombre,
+                              Confiabilidad_Media = round(mean(confiab_continuo[idx]), 3),
+                              SE_Medio = round(mean(se_continuo[idx]), 3),
+                              Informacion_Media = round(mean(info_continuo[idx]), 2)
+                            ))
+  }
+  
+  print(p)
+  
+  return(list(
+    grafico = p,
+    resumen = resumen_rangos,
+    rango_optimo = round(rango_optimo, 2)
+  ))
+}
+
+cat("\n=== ANÁLISIS DE CONFIABILIDAD CONDICIONAL ===\n")
+confiab_analisis <- confiabilidad_condicional(m2)
+
+cat("\nResumen de confiabilidad por rangos de theta:\n")
+print(confiab_analisis$resumen)
+
+cat("\nRango óptimo de medición (confiabilidad > 0.8):\n")
+cat("θ entre", confiab_analisis$rango_optimo[1], "y", confiab_analisis$rango_optimo[2], "\n")
+
+confiab_1pl <- confiabilidad_condicional(m)  # modelo 2PL
+confiab_2pl <- confiabilidad_condicional(m2)
+library(dplyr)
+df1 <- confiab_1pl$grafico$data %>% mutate(Modelo = "Rasch")
+df2 <- confiab_2pl$grafico$data %>% mutate(Modelo = "2PL")
+
+
+
+ggplot(bind_rows(df1, df2), aes(x = theta, y = confiabilidad, color = Modelo)) +
+  geom_line(size = 1.2) +
+  scale_color_manual(values = c("blue", "red")) +
+  labs(title = "Comparación de Confiabilidad Condicional entre Modelos",
+       x = expression(theta), y = "Confiabilidad") +
+  theme_minimal()
+
+```
+
+### Interpretación de la confiabilidad condicional:
+- **Confiabilidad variable**: El test no es igualmente confiable en todo el rango
+- **Zona óptima**: La EMSA es más confiable en niveles medios de inseguridad alimentaria
+- **Implicaciones**: Para hogares en extremos, considerar instrumentos adicionales o más ítems
+
+## Análisis 5: Simulación Monte Carlo - Validación del Modelo
+
+Para entender mejor la relación entre los scores observados y theta, realizamos una simulación donde conocemos los valores "verdaderos". Es decir, 
+
+“Si el modelo fuera cierto, ¿qué tan bien podríamos estimar los niveles verdaderos de inseguridad alimentaria de las personas?”
+
+Esto imita cómo responderían esas personas si el modelo fuera “la verdad”.
+
+La función además calcula cómo varía el error o RMSE según el score total observado (número de ítems afirmativos).
+
+- Si el RMSE es bajo (cercano a 0), el modelo estima bien a esas personas.
+
+- Si es alto en los extremos (scores muy bajos o muy altos), indica menor precisión en esos rangos, lo cual es típico de los tests IRT.
+
+```{r message=FALSE, warning=FALSE}
+simular_relacion_score_theta <- function(modelo, n_sim = 1000) {
+  set.seed(2024)
+  
+  # 1. Extraer parámetros
+  coef_list <- mirt::coef(modelo, simplify = TRUE)
+  
+  if ("items" %in% names(coef_list)) {
+    # --- Caso: coeficientes consolidados en matriz (tu caso) ---
+    item_mat <- coef_list$items
+    a_pars <- item_mat[, "a1"]
+    d_pars <- item_mat[, "d"]
+    item_names <- rownames(item_mat)
+  } else {
+    # --- Caso: coeficientes por ítem en lista ---
+    item_pars <- coef_list[!names(coef_list) %in% "GroupPars"]
+    a_pars <- sapply(item_pars, function(x) if ("a1" %in% names(x)) x[["a1"]] else 1)
+    d_pars <- sapply(item_pars, function(x) if ("d" %in% names(x)) x[["d"]] else 0)
+    item_names <- names(item_pars)
+  }
+  
+  n_items <- length(a_pars)
+  itemtype <- mirt::extract.mirt(modelo, "itemtype")
+  if (length(itemtype) != n_items) itemtype <- rep("2PL", n_items)
+  
+  # --- Diagnóstico de parámetros ---
+  cat("\nChequeo de parámetros:\n")
+  cat("Ítems:", n_items, "\n")
+  cat("Primeros a:", round(head(a_pars), 3), "\n")
+  cat("Primeros d:", round(head(d_pars), 3), "\n")
+  cat("Itemtype:", unique(itemtype), "\n\n")
+  
+  # 2. Generar thetas verdaderos
+  thetas_verdaderos <- rnorm(n_sim, 0, 1)
+  
+  # 3. Convertir a matriz con nombres correctos
+  a_mat <- matrix(a_pars, nrow = n_items, ncol = 1)
+  rownames(a_mat) <- item_names
+  d_vec <- as.numeric(d_pars)
+  names(d_vec) <- item_names
+  
+  # 4. Simular respuestas
+  datos_sim <- mirt::simdata(
+    a = a_mat,
+    d = d_vec,
+    itemtype = itemtype,
+    Theta = matrix(thetas_verdaderos, ncol = 1)
+  )
+  
+  # 5. Calcular scores y estimar thetas
+  scores_obs <- rowSums(datos_sim)
+  theta_est_matrix <- mirt::fscores(modelo, response.pattern = datos_sim, 
+                                    method = "EAP", full.scores = TRUE)
+  thetas_estimados <- as.vector(theta_est_matrix[, 1])
+  
+  # 6. Consolidar resultados
+  df_sim <- data.frame(
+    theta_verdadero = thetas_verdaderos,
+    theta_estimado = thetas_estimados,
+    score_observado = scores_obs,
+    error = thetas_estimados - thetas_verdaderos,
+    error_abs = abs(thetas_estimados - thetas_verdaderos)
+  )
+  
+  cor_recuperacion <- cor(df_sim$theta_verdadero, df_sim$theta_estimado)
+  
+  # 7. Estadísticas
+  cat("\n=== ESTADÍSTICAS DE RECUPERACIÓN ===\n")
+  cat("Correlación:", round(cor_recuperacion, 3), "\n")
+  cat("RMSE:", round(sqrt(mean(df_sim$error^2)), 3), "\n")
+  cat("Sesgo medio:", round(mean(df_sim$error), 3), "\n")
+  
+  # 8. Gráficos
+  p1 <- ggplot(df_sim, aes(x = theta_verdadero, y = theta_estimado)) +
+    geom_point(alpha = 0.3, color = "blue") +
+    geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+    geom_smooth(method = "lm", se = TRUE, color = "darkblue") +
+    annotate("text", x = -2, y = 2.5, 
+             label = paste("r =", round(cor_recuperacion, 3)), 
+             size = 4, color = "darkblue") +
+    labs(title = "Recuperación de Parámetros: Theta Verdadero vs Estimado",
+         x = expression(theta ~ "verdadero"),
+         y = expression(theta ~ "estimado")) +
+    theme_minimal() +
+    coord_fixed()
+  
+  p2 <- ggplot(df_sim, aes(x = score_observado, y = error)) +
+    geom_boxplot(aes(group = score_observado), fill = "lightyellow", alpha = 0.7) +
+    geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+    geom_smooth(method = "loess", color = "blue", se = TRUE) +
+    labs(title = "Error de Estimación \n por Score Observado",
+         x = "Score Observado", y = "Error de Estimación") +
+    theme_minimal() +
+    scale_x_continuous(breaks = 0:12)
+  
+  gridExtra::grid.arrange(p1, p2, ncol = 2)
+  
+  # 9. RMSE por score
+  rmse_por_score <- aggregate(error_abs ~ score_observado, df_sim, 
+                              function(x) c(rmse = round(sqrt(mean(x^2)), 3),
+                                            n = length(x)))
+  rmse_por_score <- do.call(data.frame, rmse_por_score)
+  colnames(rmse_por_score) <- c("Score", "RMSE", "N")
+  
+  return(list(
+    simulacion = df_sim, 
+    rmse_score = rmse_por_score,
+    correlacion = cor_recuperacion
+  ))
+}
+
+
+# Ejecutar simulación
+cat("\n=== SIMULACIÓN MONTE CARLO ===\n")
+sim_resultados <- simular_relacion_score_theta(m2, n_sim = 2000)
+
+cat("\nRMSE por score observado:\n")
+print(sim_resultados$rmse_score)
+```
+
+### Interpretación de la simulación:
+- **Alta recuperación**: La correlación entre theta verdadero y estimado es muy alta
+- **Sesgo mínimo**: El modelo recupera los parámetros sin sesgo sistemático
+- **Error variable**: El error de estimación varía según el nivel del score
+
+
+Hacemos la misma simulación para el de un parámetro
+
+
+```{r}
+simular_relacion_score_theta_rasch <- function(modelo, n_sim = 1000) {
+  set.seed(2024)
+  
+  coef_list <- mirt::coef(modelo, simplify = TRUE)
+  
+  if ("items" %in% names(coef_list)) {
+    item_mat <- coef_list$items
+    a_pars <- item_mat[, "a1"]
+    d_pars <- item_mat[, "d"]
+    item_names <- rownames(item_mat)
+  } else {
+    item_pars <- coef_list[!names(coef_list) %in% "GroupPars"]
+    a_pars <- sapply(item_pars, function(x) if ("a1" %in% names(x)) x[["a1"]] else 1)
+    d_pars <- sapply(item_pars, function(x) if ("d" %in% names(x)) x[["d"]] else 0)
+    item_names <- names(item_pars)
+  }
+  
+  n_items <- length(a_pars)
+  itemtype <- rep("dich", n_items)  # 🔹 <- cambio clave
+  
+  cat("\nChequeo de parámetros:\n")
+  cat("Ítems:", n_items, "\n")
+  cat("Primeros a:", round(head(a_pars), 3), "\n")
+  cat("Primeros d:", round(head(d_pars), 3), "\n")
+  cat("Itemtype:", unique(itemtype), "\n\n")
+  
+  thetas_verdaderos <- rnorm(n_sim, 0, 1)
+  
+  a_mat <- matrix(a_pars, nrow = n_items, ncol = 1)
+  rownames(a_mat) <- item_names
+  d_vec <- as.numeric(d_pars)
+  names(d_vec) <- item_names
+  
+  datos_sim <- mirt::simdata(
+    a = a_mat,
+    d = d_vec,
+    itemtype = itemtype,
+    Theta = matrix(thetas_verdaderos, ncol = 1)
+  )
+  
+  scores_obs <- rowSums(datos_sim)
+  theta_est_matrix <- mirt::fscores(modelo, response.pattern = datos_sim, method = "EAP", full.scores = TRUE)
+  thetas_estimados <- as.vector(theta_est_matrix[, 1])
+  
+  df_sim <- data.frame(
+    theta_verdadero = thetas_verdaderos,
+    theta_estimado = thetas_estimados,
+    score_observado = scores_obs,
+    error = thetas_estimados - thetas_verdaderos,
+    error_abs = abs(thetas_estimados - thetas_verdaderos)
+  )
+  
+  cor_recuperacion <- cor(df_sim$theta_verdadero, df_sim$theta_estimado)
+  
+  cat("\n=== ESTADÍSTICAS DE RECUPERACIÓN ===\n")
+  cat("Correlación:", round(cor_recuperacion, 3), "\n")
+  cat("RMSE:", round(sqrt(mean(df_sim$error^2)), 3), "\n")
+  cat("Sesgo medio:", round(mean(df_sim$error), 3), "\n")
+  
+  rmse_por_score <- aggregate(error_abs ~ score_observado, df_sim, 
+                              function(x) c(rmse = round(sqrt(mean(x^2)), 3),
+                                            n = length(x)))
+  rmse_por_score <- do.call(data.frame, rmse_por_score)
+  colnames(rmse_por_score) <- c("Score", "RMSE", "N")
+  
+  return(list(
+    simulacion = df_sim,
+    rmse_score = rmse_por_score,
+    correlacion = cor_recuperacion
+  ))
+}
+
+
+# Ejecutar simulación
+sim_resultados_rasch <- simular_relacion_score_theta_rasch(m, n_sim = 2000)
+print(sim_resultados_rasch$rmse_score)
+
+```
+
